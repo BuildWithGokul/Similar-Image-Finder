@@ -1,0 +1,8 @@
+flask
+werkzeug
+numpy
+opencv-python
+deepface
+tensorflow
+tf-keras
+gunicorn
