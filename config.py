@@ -11,15 +11,15 @@ ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png"}
 
 MAX_UPLOAD_SIZE_MB = 10
 
-# 🔥 ULTRA MODE
-MODEL_NAME = "ArcFace"
-DETECTOR_BACKEND = "retinaface"
-ENFORCE_DETECTION = False
+# ✅ NORMAL MODE (Render Free + Stable + Decent Accuracy 50–75%)
+MODEL_NAME = "Facenet512"          # ✅ good accuracy and stable
+DETECTOR_BACKEND = "opencv"        # ✅ lightweight (no retinaface download)
+ENFORCE_DETECTION = False          # ✅ prevents crash on low quality images
 
-# 🔥 Results
-TOP_K_RESULTS = 10            # shortlist more
-RETURN_TOP_RESULTS = 5        # show best 5
+# ✅ Results
+TOP_K_RESULTS = 15                 # check more images for better chance
+RETURN_TOP_RESULTS = 5             # show best 5
 
-# 🔥 Thresholds
-COSINE_MATCH_THRESHOLD = 0.30     # increase = strict
-USE_VERIFY_STAGE = True
+# ✅ Thresholds (balanced)
+COSINE_MATCH_THRESHOLD = 0.35      # 0.30 = too loose, 0.40 = too strict
+USE_VERIFY_STAGE = False           # ✅ MUST OFF for Render free stability
