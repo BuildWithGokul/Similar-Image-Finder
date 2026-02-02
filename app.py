@@ -149,6 +149,10 @@ def search_similar_faces():
         "uploaded_url": f"/uploads/{saved_name}",
         "results": final_results
     })
+    @app.route("/")
+def home():
+    return "SERVER IS LIVE ✅"
+
 
 
 if __name__ == "__main__":
