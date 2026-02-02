@@ -2,7 +2,6 @@ import os
 import pickle
 import numpy as np
 import cv2
-from deepface import DeepFace
 import config as cfg
 
 
@@ -38,6 +37,12 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray):
     return float(np.dot(a, b) / denom)
 
 
+# ✅ Lazy import DeepFace (prevents crash on Render startup)
+def _get_deepface():
+    from deepface import DeepFace
+    return DeepFace
+
+
 # ✅ ULTRA: detect face & take biggest one only
 def extract_main_face(img_path: str):
     """
@@ -45,6 +50,8 @@ def extract_main_face(img_path: str):
     Picks biggest face if multiple faces exist.
     """
     try:
+        DeepFace = _get_deepface()
+
         faces = DeepFace.extract_faces(
             img_path=img_path,
             detector_backend=cfg.DETECTOR_BACKEND,
@@ -75,7 +82,7 @@ def extract_main_face(img_path: str):
         if face_img is None:
             return None
 
-        # face_img is RGB float [0..1] sometimes -> convert to uint8 BGR safely
+        # face_img is RGB float [0..1] sometimes -> convert to uint8
         if face_img.max() <= 1.0:
             face_img = (face_img * 255).astype(np.uint8)
         else:
@@ -95,10 +102,12 @@ def compute_embedding_from_face(face_bgr):
     Compute embedding from already cropped face image (BGR).
     """
     try:
+        DeepFace = _get_deepface()
+
         reps = DeepFace.represent(
             img_path=face_bgr,
             model_name=cfg.MODEL_NAME,
-            detector_backend="skip",  # ✅ important: we already extracted face
+            detector_backend="skip",   # ✅ we already extracted face
             enforce_detection=False,
         )
 
@@ -107,6 +116,7 @@ def compute_embedding_from_face(face_bgr):
 
         emb = np.array(reps[0]["embedding"], dtype=np.float32)
         return emb
+
     except Exception:
         return None
 
@@ -128,6 +138,8 @@ def verify_faces(query_path: str, db_img_path: str):
     ✅ Final verification stage: highest accuracy
     """
     try:
+        DeepFace = _get_deepface()
+
         result = DeepFace.verify(
             img1_path=query_path,
             img2_path=db_img_path,
@@ -136,5 +148,6 @@ def verify_faces(query_path: str, db_img_path: str):
             enforce_detection=cfg.ENFORCE_DETECTION,
         )
         return result
+
     except Exception:
         return None
