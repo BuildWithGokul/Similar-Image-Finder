@@ -7,164 +7,171 @@ from werkzeug.utils import secure_filename
 
 import config as cfg
 from utils import (
-ensure_folder,
-allowed_file,
-load_db,
-save_db,
-compute_embedding,
-cosine_similarity,
-verify_faces,
+    ensure_folder,
+    allowed_file,
+    load_db,
+    save_db,
+    compute_embedding,
+    cosine_similarity,
+    verify_faces,
 )
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = cfg.MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
+# Ensure folders exist
 ensure_folder(cfg.UPLOAD_FOLDER)
 ensure_folder(cfg.FACE_DB_FOLDER)
 ensure_folder(os.path.dirname(cfg.DB_PATH))
 
 
+# ✅ Home Page
 @app.route("/")
 def home():
     return render_template("index.html")
 
 
+# ✅ Serve uploaded images
 @app.route("/uploads/<path:filename>")
 def uploaded_file(filename):
-return send_from_directory(cfg.UPLOAD_FOLDER, filename)
+    return send_from_directory(cfg.UPLOAD_FOLDER, filename)
 
 
+# ✅ Serve face_db images
 @app.route("/face_db/<path:filename>")
 def db_file(filename):
-return send_from_directory(cfg.FACE_DB_FOLDER, filename)
+    return send_from_directory(cfg.FACE_DB_FOLDER, filename)
 
 
+# ✅ Rebuild database embeddings
 @app.route("/api/rebuild_db", methods=["POST"])
 def rebuild_db():
-db_data = {"embeddings": [], "filenames": []}
+    db_data = {"embeddings": [], "filenames": []}
 
-files = [
-    f for f in os.listdir(cfg.FACE_DB_FOLDER)
-    if f.lower().split(".")[-1] in cfg.ALLOWED_EXTENSIONS
-]
+    files = [
+        f for f in os.listdir(cfg.FACE_DB_FOLDER)
+        if f.lower().split(".")[-1] in cfg.ALLOWED_EXTENSIONS
+    ]
 
-if len(files) == 0:
+    if len(files) == 0:
+        save_db(db_data)
+        return jsonify({
+            "ok": True,
+            "count": 0,
+            "skipped": 0,
+            "message": "No images found in face_db."
+        })
+
+    skipped = 0
+
+    for fname in files:
+        img_path = os.path.join(cfg.FACE_DB_FOLDER, fname)
+
+        emb = compute_embedding(img_path)
+        if emb is None:
+            skipped += 1
+            continue
+
+        db_data["embeddings"].append(emb.tolist())
+        db_data["filenames"].append(fname)
+
     save_db(db_data)
-    return jsonify({"ok": True, "count": 0, "skipped": 0, "message": "No images found in face_db."})
 
-skipped = 0
-
-for fname in files:
-    img_path = os.path.join(cfg.FACE_DB_FOLDER, fname)
-
-    emb = compute_embedding(img_path)
-    if emb is None:
-        skipped += 1
-        continue
-
-    db_data["embeddings"].append(emb.tolist())
-    db_data["filenames"].append(fname)
-
-save_db(db_data)
-
-return jsonify({
-    "ok": True,
-    "count": len(db_data["filenames"]),
-    "skipped": skipped,
-    "message": "Database rebuilt successfully ✅"
-})
+    return jsonify({
+        "ok": True,
+        "count": len(db_data["filenames"]),
+        "skipped": skipped,
+        "message": "Database rebuilt successfully ✅"
+    })
 
 
+# ✅ Search similar faces
 @app.route("/api/search", methods=["POST"])
 def search_similar_faces():
-if "image" not in request.files:
-    return jsonify({"ok": False, "error": "No image received"}), 400
+    if "image" not in request.files:
+        return jsonify({"ok": False, "error": "No image received"}), 400
 
-file = request.files["image"]
-if file.filename == "":
-    return jsonify({"ok": False, "error": "Empty filename"}), 400
+    file = request.files["image"]
 
-if not allowed_file(file.filename):
-    return jsonify({"ok": False, "error": "Only JPG/JPEG/PNG allowed"}), 400
+    if file.filename == "":
+        return jsonify({"ok": False, "error": "Empty filename"}), 400
 
-# Save uploaded file
-filename = secure_filename(file.filename)
-ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-saved_name = f"{ts}_{filename}"
-saved_path = os.path.join(cfg.UPLOAD_FOLDER, saved_name)
-file.save(saved_path)
+    if not allowed_file(file.filename):
+        return jsonify({"ok": False, "error": "Only JPG/JPEG/PNG allowed"}), 400
 
-# Query embedding (ULTRA)
-query_emb = compute_embedding(saved_path)
-if query_emb is None:
-    return jsonify({"ok": False, "error": "No main face detected. Use clear front face photo."}), 400
+    # Save uploaded file
+    filename = secure_filename(file.filename)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    saved_name = f"{ts}_{filename}"
+    saved_path = os.path.join(cfg.UPLOAD_FOLDER, saved_name)
+    file.save(saved_path)
 
-# Load DB
-db = load_db()
-if len(db.get("embeddings", [])) == 0:
-    return jsonify({"ok": False, "error": "Database empty. Click Rebuild DB first."}), 400
+    # Query embedding
+    query_emb = compute_embedding(saved_path)
+    if query_emb is None:
+        return jsonify({
+            "ok": False,
+            "error": "No main face detected. Use clear front face photo."
+        }), 400
 
-db_embeddings = np.array(db["embeddings"], dtype=np.float32)
+    # Load DB
+    db = load_db()
+    if len(db.get("embeddings", [])) == 0:
+        return jsonify({
+            "ok": False,
+            "error": "Database empty. Click Rebuild DB first."
+        }), 400
 
-# Stage 1: cosine shortlist
-scores = [cosine_similarity(query_emb, emb) for emb in db_embeddings]
-shortlist_k = min(cfg.TOP_K_RESULTS, len(scores))
-shortlist_indexes = np.argsort(scores)[::-1][:shortlist_k]
+    db_embeddings = np.array(db["embeddings"], dtype=np.float32)
 
-temp_results = []
-for idx in shortlist_indexes:
-    fname = db["filenames"][int(idx)]
-    score = float(scores[int(idx)])
+    # Stage 1: cosine shortlist
+    scores = [cosine_similarity(query_emb, emb) for emb in db_embeddings]
+    shortlist_k = min(cfg.TOP_K_RESULTS, len(scores))
+    shortlist_indexes = np.argsort(scores)[::-1][:shortlist_k]
 
-    if score < cfg.COSINE_MATCH_THRESHOLD:
-        continue
+    temp_results = []
+    for idx in shortlist_indexes:
+        fname = db["filenames"][int(idx)]
+        score = float(scores[int(idx)])
 
-    item = {
-        "filename": fname,
-        "score": score,
-        "db_image_url": f"/face_db/{fname}",
-        "verified": None,
-        "distance": None,
-    }
-    temp_results.append(item)
+        if score < cfg.COSINE_MATCH_THRESHOLD:
+            continue
 
-# Stage 2: verify stage
-if cfg.USE_VERIFY_STAGE and temp_results:
-    for item in temp_results:
-        db_img_path = os.path.join(cfg.FACE_DB_FOLDER, item["filename"])
-        v = verify_faces(saved_path, db_img_path)
-        if v is not None:
-            item["verified"] = bool(v.get("verified", False))
-            item["distance"] = float(v.get("distance", 999))
+        temp_results.append({
+            "filename": fname,
+            "score": score,
+            "db_image_url": f"/face_db/{fname}",
+            "verified": None,
+            "distance": None,
+        })
 
-    # Sort: verified first, then best similarity
-    temp_results.sort(key=lambda x: (x["verified"] is True, x["score"]), reverse=True)
+    # Stage 2: verify stage
+    if cfg.USE_VERIFY_STAGE and temp_results:
+        for item in temp_results:
+            db_img_path = os.path.join(cfg.FACE_DB_FOLDER, item["filename"])
+            v = verify_faces(saved_path, db_img_path)
 
-# Return top results (UI)
-final_results = temp_results[: cfg.RETURN_TOP_RESULTS]
+            if v is not None:
+                item["verified"] = bool(v.get("verified", False))
+                item["distance"] = float(v.get("distance", 999))
 
-return jsonify({
-    "ok": True,
-    "uploaded": saved_name,
-    "uploaded_url": f"/uploads/{saved_name}",
-    "results": final_results
-})
-@app.route("/")
-    def home():
-return "SERVER IS LIVE ✅"
+        # Sort: verified first, then best similarity
+        temp_results.sort(
+            key=lambda x: (x["verified"] is True, x["score"]),
+            reverse=True
+        )
+
+    final_results = temp_results[: cfg.RETURN_TOP_RESULTS]
+
+    return jsonify({
+        "ok": True,
+        "uploaded": saved_name,
+        "uploaded_url": f"/uploads/{saved_name}",
+        "results": final_results
+    })
+
+
+# ✅ Render PORT Fix
 if __name__ == "__main__":
-app.run(debug=True)
-from flask import Flask
-app = Flask(__name__)
-
-# ✅ your routes above
-# @app.route(...)
-# def home():
-#     return "Hello"
-
-# ✅ Paste this at the bottom (LAST)
-import os
-
-if __name__ == "__main__":
-port = int(os.environ.get("PORT", 5000))
-app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
